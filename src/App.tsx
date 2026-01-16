@@ -39,55 +39,55 @@ const Player = React.forwardRef<THREE.Mesh>((_props, forwardedRef) => {
   const [, getKeys] = useKeyboardControls<ControlKeys>();
 
   useFrame((state) => {
-    const keyboard = getKeys(); // キーボードの状態
+    const keyboard = getKeys();
 
-    // キーボードとスマホボタン、どちらかが押されていれば true
-    const forward = keyboard.forward || mobileInput.forward;
-    const backward = keyboard.backward || mobileInput.backward;
-    const left = keyboard.left || mobileInput.left;
-    const right = keyboard.right || mobileInput.right;
-    const jump = keyboard.jump || mobileInput.jump;
+    // 1. 入力の統合（キーボード + ジョイスティック）
+    const kx = (keyboard.left ? -1 : 0) + (keyboard.right ? 1 : 0);
+    const kz = (keyboard.forward ? -1 : 0) + (keyboard.backward ? 1 : 0);
+    
+    // キーボード入力があればそれを優先、なければスティックの値を使う
+    let inputX = kx !== 0 ? kx : joystickVector.x;
+    let inputZ = kz !== 0 ? kz : joystickVector.y;
+    const jump = keyboard.jump || mobileJump.active;
 
     const isGrounded = Math.abs(vel.current[1]) < 0.5;
 
-    // 1. リセットロジック
+    // 2. リセットロジック
     if (pos.current[1] < -5) {
       api.position.set(...initialPosition);
       api.velocity.set(0, 0, 0);
       return;
     }
 
-    // 移動計算 (以下、この変数を元に計算)
-  let dx = (left ? -1 : 0) + (right ? 1 : 0);
-  let dz = (forward ? -1 : 0) + (backward ? 1 : 0);
-    const moveSpeed = 6
-
-    // ★ 修正ポイント：現在どの床の上にいるか判定
+    // 3. 動く床（MovingPlatform）の速度取得
     let extraX = 0;
     if (isGrounded && pos.current[1] > -0.1) {
-      // Z座標からインデックスを逆算（App内の配置ルール -10 - i * 6 に基づく）
       const index = Math.round((pos.current[2] + 10) / -6);
       const targetZ = -10 - index * 6;
-
-      // その床の真上にいるかチェック（Z方向の許容範囲2.5）
       if (index >= 0 && Math.abs(pos.current[2] - targetZ) < 2.5) {
         extraX = platformsMap.get(index) || 0;
       }
     }
 
-    const length = Math.sqrt(dx * dx + dz * dz)
-    const directionX = length > 0 ? (dx / length) * moveSpeed : 0;
-    const directionZ = length > 0 ? (dz / length) * moveSpeed : 0;
+    // 4. 移動速度の計算
+    // 斜め移動で速くなりすぎないよう正規化
+    const length = Math.sqrt(inputX * inputX + inputZ * inputZ);
+    const moveSpeed = 6;
+    
+    // 入力がある場合のみ速度を計算
+    const velX = length > 0 ? (inputX / (length > 1 ? length : 1)) * moveSpeed : 0;
+    const velZ = length > 0 ? (inputZ / (length > 1 ? length : 1)) * moveSpeed : 0;
 
-    api.velocity.set(directionX + extraX, vel.current[1], directionZ)
+    // 物理エンジンへの反映（床の速度 extraX を足す）
+    api.velocity.set(velX + extraX, vel.current[1], velZ);
 
-    // 3. ジャンプ
+    // 5. ジャンプ
     if (jump && !wasJumpPressed.current && isGrounded) {
       api.velocity.set(vel.current[0], 9, vel.current[2])
     }
     wasJumpPressed.current = jump
 
-    // 4. カメラ追従
+    // 6. カメラ追従
     const targetCameraPos = new THREE.Vector3(
       pos.current[0] + CAMERA_OFFSET.x,
       pos.current[1] + CAMERA_OFFSET.y,
@@ -221,84 +221,82 @@ function FollowLight({ playerRef }: { playerRef: React.RefObject<THREE.Object3D>
   )
 }
 
-// 外部で管理するスマホ入力の状態
-const mobileInput = {
-  forward: false,
-  backward: false,
-  left: false,
-  right: false,
-  jump: false
-};
+// 3D的な移動ベクトルを保持
+const joystickVector = { x: 0, y: 0 };
+// ジャンプはボタンとして残す
+const mobileJump = { active: false };
 
-function MobileControls() {
-  const handlePress = (key: keyof typeof mobileInput, pressed: boolean) => {
-    mobileInput[key] = pressed;
+function VirtualJoystick() {
+  const containerRef = useRef<HTMLDivElement>(null!)
+  const thumbRef = useRef<HTMLDivElement>(null!)
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    const rect = containerRef.current.getBoundingClientRect()
+    const centerX = rect.left + rect.width / 2
+    const centerY = rect.top + rect.height / 2
+
+    // 中心からの距離を計算
+    let dx = e.clientX - centerX
+    let dy = e.clientY - centerY
+    const distance = Math.sqrt(dx * dx + dy * dy)
+    const maxRadius = rect.width / 2
+
+    // スティックを円の中に収める
+    if (distance > maxRadius) {
+      dx *= maxRadius / distance
+      dy *= maxRadius / distance
+    }
+
+    // スティック（つまみ）を移動
+    thumbRef.current.style.transform = `translate(${dx}px, ${dy}px)`
+
+    // プレイヤーへの入力値を更新 (-1.0 〜 1.0)
+    joystickVector.x = dx / maxRadius
+    joystickVector.y = dy / maxRadius
   }
 
-  // ボタンのサイズを「画面の高さ」か「画面の幅」の小さい方を基準に決める
-  const btnSize = 'min(12vw, 12vh, 60px)';
-
-  const btn: React.CSSProperties = {
-    width: btnSize,
-    height: btnSize,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: '12px',
-    color: 'white',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    userSelect: 'none',
-    touchAction: 'none',
-    fontSize: '20px',
-    border: '1px solid rgba(255,255,255,0.3)',
-    WebkitTapHighlightColor: 'transparent',
+  const handlePointerUp = () => {
+    thumbRef.current.style.transform = `translate(0px, 0px)`
+    joystickVector.x = 0
+    joystickVector.y = 0
   }
 
   return (
     <div style={{
-      position: 'fixed', // absoluteより確実に画面内に固定されます
-      bottom: '30px',    // 下からしっかり離す
-      left: '0',
-      width: '100%',
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'flex-end',
-      padding: '0 30px', // 左右からしっかり離す
-      pointerEvents: 'none',
-      zIndex: 1000,
-      boxSizing: 'border-box'
+      position: 'fixed', bottom: '40px', left: '0', width: '100%',
+      display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
+      padding: '0 50px', pointerEvents: 'none', zIndex: 1000, boxSizing: 'border-box'
     }}>
-      
-      {/* 左側：十字キー */}
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: `repeat(3, ${btnSize})`, 
-        gap: '8px', 
-        pointerEvents: 'auto' 
-      }}>
-        <div />
-        <div style={btn} onPointerDown={() => handlePress('forward', true)} onPointerUp={() => handlePress('forward', false)} onPointerLeave={() => handlePress('forward', false)}>↑</div>
-        <div />
-        <div style={btn} onPointerDown={() => handlePress('left', true)} onPointerUp={() => handlePress('left', false)} onPointerLeave={() => handlePress('left', false)}>←</div>
-        <div style={btn} onPointerDown={() => handlePress('backward', true)} onPointerUp={() => handlePress('backward', false)} onPointerLeave={() => handlePress('backward', false)}>↓</div>
-        <div style={btn} onPointerDown={() => handlePress('right', true)} onPointerUp={() => handlePress('right', false)} onPointerLeave={() => handlePress('right', false)}>→</div>
+      {/* ジョイスティック土台 */}
+      <div
+        ref={containerRef}
+        onPointerMove={handlePress => handlePointerMove(handlePress)}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+        style={{
+          width: '120px', height: '120px', backgroundColor: 'rgba(255,255,255,0.1)',
+          borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)',
+          pointerEvents: 'auto', touchAction: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}
+      >
+        {/* スティック（つまみ） */}
+        <div ref={thumbRef} style={{
+          width: '50px', height: '50px', backgroundColor: 'rgba(255,255,255,0.5)',
+          borderRadius: '50%', pointerEvents: 'none'
+        }} />
       </div>
 
-      {/* 右側：ジャンプボタン */}
-      <div style={{ pointerEvents: 'auto' }}>
-        <div style={{ 
-          ...btn, 
-          width: 'min(18vw, 18vh, 80px)', 
-          height: 'min(18vw, 18vh, 80px)', 
-          borderRadius: '50%', 
-          backgroundColor: 'rgba(255,255,255,0.3)',
-          fontSize: '14px',
-          fontWeight: 'bold'
-        }} 
-        onPointerDown={() => handlePress('jump', true)} 
-        onPointerUp={() => handlePress('jump', false)}>
-          JUMP
-        </div>
+      {/* ジャンプボタン（右側） */}
+      <div
+        onPointerDown={() => mobileJump.active = true}
+        onPointerUp={() => mobileJump.active = false}
+        style={{
+          width: '90px', height: '90px', backgroundColor: 'rgba(255,255,255,0.3)',
+          borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: 'white', fontWeight: 'bold', pointerEvents: 'auto', touchAction: 'none'
+        }}
+      >
+        JUMP
       </div>
     </div>
   )
@@ -342,7 +340,7 @@ export default function App() {
             <button onClick={() => window.location.reload()} style={{ marginTop: '20px', padding: '10px 20px', cursor: 'pointer' }}>RETRY</button>
           </div>
         )}
-        <MobileControls />
+        <VirtualJoystick/>
         <Canvas shadows camera={{ fov: 50, near: 0.1, far: 1000 }}>
           <color attach="background" args={['#111']} />
           <ambientLight intensity={0.5} />
