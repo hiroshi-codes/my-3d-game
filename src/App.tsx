@@ -19,7 +19,7 @@ const CAMERA_OFFSET = new THREE.Vector3(0, 5, 10);
 // ★ 各床の速度を個別に管理するためのMap
 const platformsMap = new Map<number, number>();
 
-const Player = React.forwardRef<THREE.Mesh>((props, forwardedRef) => {
+const Player = React.forwardRef<THREE.Mesh>((_props, forwardedRef) => {
   const initialPosition: [number, number, number] = [0, 5, 0];
   const [ref, api] = useBox(() => ({
     mass: 1,
